@@ -13,15 +13,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
-# Common emoji unicode ranges plus the variation selector, used to detect
-# "emoji-only" text so it can be treated as trivial (like a sticker).
+# Common emoji unicode ranges, the variation selector, the misc-symbols/arrows
+# block (stars, arrows, etc.), and the zero-width joiner (used to glue
+# multi-codepoint emoji like family/profession sequences together) — all
+# stripped to detect "emoji-only" text so it can be treated as trivial (like
+# a sticker).
 _EMOJI_PATTERN = re.compile(
     "["
     "\U0001F300-\U0001FAFF"
     "☀-➿"
+    "\U00002B00-\U00002BFF"
     "\U0001F1E6-\U0001F1FF"
     "\U0001F900-\U0001F9FF"
     "️"
+    "‍"
     "]+",
     flags=re.UNICODE,
 )
