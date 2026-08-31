@@ -1,7 +1,7 @@
 # telegram-reply-reminder
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/tests-31%20passing-brightgreen)
+![Tests](https://github.com/sundarrr22/telegram-reply-reminder/actions/workflows/test.yml/badge.svg)
 ![Telethon](https://img.shields.io/badge/telethon-MTProto-2CA5E0)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
