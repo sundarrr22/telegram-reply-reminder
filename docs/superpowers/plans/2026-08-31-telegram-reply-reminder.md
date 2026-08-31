@@ -2,18 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a Telethon-based script that flags Telegram 1:1 chats needing a
-reply (skipping trivial sticker/emoji-only exchanges and anything you've
-reacted to), moves them into a "To Reply Soon" Telegram folder, and
-auto-removes them once you reply — runnable unattended via cron.
+**Goal:** Build a Telethon-based script that flags Telegram 1:1 chats and
+small group chats needing a reply (skipping trivial sticker/emoji-only
+exchanges and anything you've reacted to), moves them into a "To Reply Soon"
+Telegram folder, auto-removes them once you reply, supports "close
+friend"/"family" tiers managed via Saved Messages commands, and skips large
+groups — runnable unattended via cron.
 
-**Architecture:** Pure decision logic (`reminder/logic.py`) is fully unit
-tested with fake message objects and has zero Telethon/DB dependencies.
-SQLite persistence (`reminder/db.py`) is a thin, independently-tested
-key-value-ish layer. The Telethon wrapper (`reminder/telegram_client.py`) and
-`run.py` glue these together but are not unit tested — they require a live
-Telegram session this environment cannot create. `login.py` and
-`set_threshold.py` are small standalone CLI entry points.
+**Architecture:** Pure decision logic (`reminder/logic.py`) and pure command
+parsing (`reminder/commands.py`) are fully unit tested with fake objects and
+raw strings, zero Telethon/DB dependencies. SQLite persistence
+(`reminder/db.py`) is a thin, independently-tested layer. The Telethon
+wrapper (`reminder/telegram_client.py`) and `run.py` glue these together but
+are not unit tested — they require a live Telegram session this environment
+cannot create. `login.py` and `set_threshold.py` are small standalone CLI
+entry points.
 
 **Tech Stack:** Python 3.11+, Telethon, python-dotenv, sqlite3 (stdlib),
 pytest.
@@ -50,6 +53,9 @@ TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
 SESSION_NAME=reminder
 DEFAULT_THRESHOLD_HOURS=24
+CLOSE_THRESHOLD_HOURS=6
+FAMILY_THRESHOLD_HOURS=12
+MAX_GROUP_SIZE=10
 FOLDER_NAME=To Reply Soon
 RUN_INTERVAL_HOURS=36
 DB_PATH=reminder.sqlite3
@@ -180,12 +186,16 @@ def test_needs_reply_uses_oldest_message_in_batch():
     assert needs_reply(batch, NOW, 24) is True
 
 
-def test_resolve_threshold_uses_override():
-    assert resolve_threshold(1, 6, 24) == 6
+def test_resolve_threshold_uses_manual_override_first():
+    assert resolve_threshold(6, "family", {"close": 6, "family": 12}, 24) == 6
 
 
-def test_resolve_threshold_falls_back_to_default():
-    assert resolve_threshold(1, None, 24) == 24
+def test_resolve_threshold_uses_tier_when_no_override():
+    assert resolve_threshold(None, "close", {"close": 6, "family": 12}, 24) == 6
+
+
+def test_resolve_threshold_falls_back_to_default_when_no_override_or_tier():
+    assert resolve_threshold(None, None, {"close": 6, "family": 12}, 24) == 24
 
 
 def test_should_run_true_when_never_run():
@@ -211,7 +221,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'reminder.logic'`
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 _EMOJI_PATTERN = re.compile(
     "["
@@ -251,8 +261,8 @@ def is_trivial_message(message: Message) -> bool:
 
 def unreplied_batch(messages: Sequence[Message]) -> list:
     """messages ordered newest-first. Returns the consecutive run of
-    not-from-me messages at the head of the list, i.e. everything they
-    sent since your last message."""
+    not-from-me messages at the head of the list, i.e. everything sent
+    since your last message (works for both 1:1 and group dialogs)."""
     batch = []
     for m in messages:
         if m.from_me:
@@ -262,9 +272,16 @@ def unreplied_batch(messages: Sequence[Message]) -> list:
 
 
 def resolve_threshold(
-    chat_id: int, override_hours: Optional[float], default_hours: float
+    override_hours: Optional[float],
+    tier: Optional[str],
+    tier_hours: Dict[str, float],
+    default_hours: float,
 ) -> float:
-    return override_hours if override_hours is not None else default_hours
+    if override_hours is not None:
+        return override_hours
+    if tier and tier in tier_hours:
+        return tier_hours[tier]
+    return default_hours
 
 
 def needs_reply(
@@ -306,7 +323,89 @@ git commit -m "Add core unanswered-chat decision logic with tests"
 
 ---
 
-### Task 3: SQLite persistence (`reminder/db.py`)
+### Task 3: Command parser (`reminder/commands.py`)
+
+**Files:**
+- Create: `reminder/commands.py`
+- Test: `tests/test_commands.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/test_commands.py`:
+
+```python
+from reminder.commands import parse_command
+
+
+def test_parse_close_with_at():
+    assert parse_command("/close @alice") == ("close", "alice")
+
+
+def test_parse_close_without_at():
+    assert parse_command("/close alice") == ("close", "alice")
+
+
+def test_parse_family():
+    assert parse_command("/family @bob") == ("family", "bob")
+
+
+def test_parse_remove():
+    assert parse_command("/remove @carol") == ("remove", "carol")
+
+
+def test_parse_ignores_unrelated_text():
+    assert parse_command("hey are you free tomorrow?") is None
+
+
+def test_parse_ignores_unknown_command():
+    assert parse_command("/block @dave") is None
+
+
+def test_parse_ignores_missing_username():
+    assert parse_command("/close") is None
+
+
+def test_parse_strips_whitespace():
+    assert parse_command("  /close   @alice  ") == ("close", "alice")
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_commands.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'reminder.commands'`
+
+- [ ] **Step 3: Write `reminder/commands.py`**
+
+```python
+import re
+from typing import Optional, Tuple
+
+_COMMAND_PATTERN = re.compile(r"^/(close|family|remove)\s+@?(\w+)$")
+
+
+def parse_command(text: str) -> Optional[Tuple[str, str]]:
+    match = _COMMAND_PATTERN.match(text.strip())
+    if not match:
+        return None
+    action, username = match.groups()
+    return action, username
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_commands.py -v`
+Expected: all tests PASS (8 passed)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add reminder/commands.py tests/test_commands.py
+git commit -m "Add /close, /family, /remove command parser with tests"
+```
+
+---
+
+### Task 4: SQLite persistence (`reminder/db.py`)
 
 **Files:**
 - Create: `reminder/db.py`
@@ -335,6 +434,17 @@ def test_threshold_roundtrip(tmp_path):
     assert db.get_threshold(conn, 1) == 9.0
     db.clear_threshold(conn, 1)
     assert db.get_threshold(conn, 1) is None
+
+
+def test_tier_roundtrip(tmp_path):
+    conn = make_conn(tmp_path)
+    assert db.get_tier(conn, 1) is None
+    db.set_tier(conn, 1, "close")
+    assert db.get_tier(conn, 1) == "close"
+    db.set_tier(conn, 1, "family")
+    assert db.get_tier(conn, 1) == "family"
+    db.clear_tier(conn, 1)
+    assert db.get_tier(conn, 1) is None
 
 
 def test_flagged_roundtrip(tmp_path):
@@ -372,6 +482,10 @@ CREATE TABLE IF NOT EXISTS chat_thresholds (
     chat_id INTEGER PRIMARY KEY,
     threshold_hours REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_tiers (
+    chat_id INTEGER PRIMARY KEY,
+    tier TEXT NOT NULL CHECK (tier IN ('close', 'family'))
+);
 CREATE TABLE IF NOT EXISTS flagged_chats (
     chat_id INTEGER PRIMARY KEY,
     flagged_at TEXT NOT NULL
@@ -408,6 +522,27 @@ def set_threshold(conn: sqlite3.Connection, chat_id: int, hours: float) -> None:
 
 def clear_threshold(conn: sqlite3.Connection, chat_id: int) -> None:
     conn.execute("DELETE FROM chat_thresholds WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+
+
+def get_tier(conn: sqlite3.Connection, chat_id: int) -> Optional[str]:
+    row = conn.execute(
+        "SELECT tier FROM chat_tiers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def set_tier(conn: sqlite3.Connection, chat_id: int, tier: str) -> None:
+    conn.execute(
+        "INSERT INTO chat_tiers (chat_id, tier) VALUES (?, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET tier = excluded.tier",
+        (chat_id, tier),
+    )
+    conn.commit()
+
+
+def clear_tier(conn: sqlite3.Connection, chat_id: int) -> None:
+    conn.execute("DELETE FROM chat_tiers WHERE chat_id = ?", (chat_id,))
     conn.commit()
 
 
@@ -449,21 +584,21 @@ def set_last_run_at(conn: sqlite3.Connection, when: datetime) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_db.py -v`
-Expected: all tests PASS (3 passed)
+Expected: all tests PASS (4 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add reminder/db.py tests/test_db.py
-git commit -m "Add SQLite persistence layer with tests"
+git commit -m "Add SQLite persistence layer with tier support and tests"
 ```
 
 ---
 
-### Task 4: Telethon wrapper (`reminder/telegram_client.py`)
+### Task 5: Telethon wrapper (`reminder/telegram_client.py`)
 
 Not unit tested — requires a live Telegram session that cannot exist in this
-environment. Manual verification happens in Task 6 once `login.py` has been
+environment. Manual verification happens in Task 7 once `login.py` has been
 run against a real account.
 
 **Files:**
@@ -476,6 +611,7 @@ import logging
 
 from telethon.tl import functions, types
 
+from reminder.commands import parse_command
 from reminder.logic import Message
 
 logger = logging.getLogger(__name__)
@@ -559,18 +695,73 @@ async def my_reaction_on_last(client, dialog, batch) -> bool:
         if getattr(reaction.peer_id, "user_id", None) == me.id:
             return True
     return False
+
+
+async def get_participant_count(client, entity) -> int:
+    if isinstance(entity, types.Chat):
+        full = await client(functions.messages.GetFullChatRequest(entity.id))
+        return full.full_chat.participants_count
+    if isinstance(entity, types.Channel):
+        full = await client(functions.channels.GetFullChannelRequest(entity))
+        return full.full_chat.participants_count
+    return 0
+
+
+async def is_eligible_dialog(client, dialog, max_group_size: int) -> bool:
+    if dialog.is_user:
+        return True
+    if dialog.is_group:
+        count = await get_participant_count(client, dialog.entity)
+        return count < max_group_size
+    return False
+
+
+async def fetch_pending_commands(client) -> list:
+    """Returns (message_id, action, username) for command-shaped text
+    messages in Saved Messages ("me")."""
+    commands = []
+    async for msg in client.iter_messages("me"):
+        if not msg.message:
+            continue
+        parsed = parse_command(msg.message)
+        if parsed:
+            action, username = parsed
+            commands.append((msg.id, action, username))
+    return commands
+
+
+async def apply_command(client, conn, message_id: int, action: str, username: str) -> None:
+    from reminder import db
+
+    try:
+        entity = await client.get_entity(username)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Could not resolve @%s for command %s, leaving message in place",
+            username,
+            action,
+        )
+        return
+
+    if action == "remove":
+        db.clear_tier(conn, entity.id)
+    else:
+        db.set_tier(conn, entity.id, action)
+
+    await client.delete_messages("me", message_id)
+    logger.info("Applied /%s @%s (chat_id=%s)", action, username, entity.id)
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add reminder/telegram_client.py
-git commit -m "Add Telethon wrapper for folder management and message batches"
+git commit -m "Add Telethon wrapper: folders, message batches, tiers, group eligibility"
 ```
 
 ---
 
-### Task 5: One-time login script (`login.py`)
+### Task 6: One-time login script (`login.py`)
 
 **Files:**
 - Create: `login.py`
@@ -605,7 +796,7 @@ git commit -m "Add one-time interactive login script"
 
 ---
 
-### Task 6: Main run script (`run.py`)
+### Task 7: Main run script (`run.py`)
 
 **Files:**
 - Create: `run.py`
@@ -623,7 +814,7 @@ from telethon import TelegramClient
 
 from reminder import db
 from reminder import telegram_client as tg
-from reminder.logic import needs_reply, resolve_threshold, should_run, unreplied_batch
+from reminder.logic import needs_reply, resolve_threshold, should_run
 
 load_dotenv()
 
@@ -636,6 +827,11 @@ API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
 SESSION_NAME = os.environ.get("SESSION_NAME", "reminder")
 DEFAULT_THRESHOLD_HOURS = float(os.environ.get("DEFAULT_THRESHOLD_HOURS", 24))
+TIER_HOURS = {
+    "close": float(os.environ.get("CLOSE_THRESHOLD_HOURS", 6)),
+    "family": float(os.environ.get("FAMILY_THRESHOLD_HOURS", 12)),
+}
+MAX_GROUP_SIZE = int(os.environ.get("MAX_GROUP_SIZE", 10))
 FOLDER_NAME = os.environ.get("FOLDER_NAME", "To Reply Soon")
 RUN_INTERVAL_HOURS = float(os.environ.get("RUN_INTERVAL_HOURS", 36))
 DB_PATH = os.environ.get("DB_PATH", "reminder.sqlite3")
@@ -646,7 +842,8 @@ async def process_dialog(client, conn, folder, dialog, now: datetime) -> None:
     batch = await tg.fetch_unreplied_batch(client, dialog)
     reacted = await tg.my_reaction_on_last(client, dialog, batch)
     override = db.get_threshold(conn, chat_id)
-    threshold = resolve_threshold(chat_id, override, DEFAULT_THRESHOLD_HOURS)
+    tier = db.get_tier(conn, chat_id)
+    threshold = resolve_threshold(override, tier, TIER_HOURS, DEFAULT_THRESHOLD_HOURS)
     unanswered = needs_reply(batch, now, threshold, reacted)
 
     if unanswered and not db.is_flagged(conn, chat_id):
@@ -675,9 +872,13 @@ async def main() -> None:
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
     await client.start()
     try:
+        commands = await tg.fetch_pending_commands(client)
+        for message_id, action, username in commands:
+            await tg.apply_command(client, conn, message_id, action, username)
+
         folder = await tg.get_or_create_folder(client, FOLDER_NAME)
         async for dialog in client.iter_dialogs():
-            if not dialog.is_user:
+            if not await tg.is_eligible_dialog(client, dialog, MAX_GROUP_SIZE):
                 continue
             await process_dialog(client, conn, folder, dialog, now)
     except Exception:
@@ -699,18 +900,20 @@ if __name__ == "__main__":
 Run: `python login.py` (once, interactively, enters phone + code)
 Run: `python run.py`
 Expected: log lines showing dialogs scanned and any chats flagged/unflagged;
-check Telegram that a "To Reply Soon" folder now exists.
+check Telegram that a "To Reply Soon" folder now exists. Send yourself
+`/close @someusername` in Saved Messages, run again, confirm the log shows
+"Applied /close" and the Saved Messages command is gone.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add run.py
-git commit -m "Add main run script wiring logic, db, and Telegram client together"
+git commit -m "Add main run script: commands, tiers, group filtering, folder sync"
 ```
 
 ---
 
-### Task 7: Per-chat threshold CLI (`set_threshold.py`)
+### Task 8: Per-chat threshold CLI (`set_threshold.py`)
 
 **Files:**
 - Create: `set_threshold.py`
@@ -778,19 +981,18 @@ git commit -m "Add CLI to list chats and set per-chat reply thresholds"
 
 ---
 
-### Task 8: README
+### Task 9: README
 
 **Files:**
 - Create: `README.md`
 
-- [ ] **Step 1: Write the README** covering: what it does and why, tech stack,
-setup (`.env`, `pip install`, `python login.py`), usage (`python run.py`,
-`python set_threshold.py`), the trivial/reaction skip rules, the 36h
-cron-throttle explanation, and full EC2 + cron + CloudWatch deployment
-instructions. Written in the user's own voice per their instructions (short
-sentences, casual/slightly-broken English, technical terms kept, no AI-essay
-filler). Content is authored directly against this repo's real file names and
-commands — see Task 9 in this plan for the exact structure to follow.
+- [ ] **Step 1: Write the README** covering: what it does and why, tech
+stack, setup (`.env`, `pip install`, `python login.py`), usage (`python
+run.py`, `python set_threshold.py`), the `/close` `/family` `/remove` Saved
+Messages commands, the trivial/reaction skip rules, the group-size cutoff,
+the 36h cron-throttle explanation, and full EC2 + cron + CloudWatch
+deployment instructions. Written in the user's own voice (short sentences,
+casual/slightly-broken English, technical terms kept, no AI-essay filler).
 
 - [ ] **Step 2: Commit**
 
@@ -801,7 +1003,7 @@ git commit -m "Add README"
 
 ---
 
-### Task 9: Publish to GitHub
+### Task 10: Publish to GitHub
 
 **Files:** none (repo-level operations only)
 
@@ -823,11 +1025,17 @@ Expected: push succeeds, `gh repo view --web` opens the new repo
 
 ## Plan self-review notes
 
-- Spec coverage: reaction skip ✅ (Task 2 `needs_reply` + tests), trailing-batch
-  triviality skip ✅ (Task 2), per-chat thresholds ✅ (Tasks 2, 3, 7), folder
-  add/remove ✅ (Task 4, 6), 36h throttle via hourly cron ✅ (Task 2 `should_run`,
-  Task 6, documented in README Task 8), CloudWatch/EC2 docs-only ✅ (Task 8).
+- Spec coverage: reaction skip ✅ (Task 2), trailing-batch triviality skip ✅
+  (Task 2), per-chat manual thresholds ✅ (Tasks 2, 4, 8), close/family tiers
+  via Saved Messages commands ✅ (Tasks 3, 4, 5, 7), tier precedence
+  (override > tier > default) ✅ (Task 2 `resolve_threshold` + tests), group
+  chats under `MAX_GROUP_SIZE` included with identical logic ✅ (Task 5
+  `is_eligible_dialog`, Task 7), large groups/channels skipped entirely ✅
+  (Task 5), 36h throttle via hourly cron ✅ (Task 2 `should_run`, Task 7,
+  documented in README Task 9), CloudWatch/EC2 docs-only ✅ (Task 9).
 - No placeholders: every step has complete, runnable code.
-- Type/name consistency checked: `Message`, `needs_reply`, `unreplied_batch`,
-  `resolve_threshold`, `should_run` are defined once in Task 2 and used with
-  identical names/signatures in Tasks 4 and 6.
+- Type/name consistency checked across tasks: `Message`, `needs_reply`,
+  `unreplied_batch`, `resolve_threshold(override_hours, tier, tier_hours,
+  default_hours)`, `should_run`, `parse_command`, `db.get_tier`/`set_tier`/
+  `clear_tier` are defined once and used with identical names/signatures
+  everywhere they're referenced later.
