@@ -163,6 +163,20 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
+Tests run automatically on every push via **[GitHub Actions](.github/workflows/test.yml)**
+— that's what the `Tests` badge at the top is pulling from live.
+
+> **A bug CI actually caught:** the first version of that workflow ran bare
+> `pytest`, which passed on my machine but failed on a clean CI checkout with
+> `ModuleNotFoundError: No module named 'reminder'` — turns out my local shell
+> was resolving the package in a way that a fresh clone doesn't reproduce, so
+> it worked for me and would've broken for anyone else. Fixed properly with
+> `pyproject.toml`'s `pythonpath = ["."]` instead of just switching to
+> `python -m pytest` and calling it a day — this way the import behaves the
+> same regardless of how the test runner is invoked. Leaving this here on
+> purpose: catching stuff like this *before* it's someone else's problem is
+> the actual point of CI.
+
 ## Setup
 
 1. Get your Telegram API credentials from **[my.telegram.org](https://my.telegram.org)**
