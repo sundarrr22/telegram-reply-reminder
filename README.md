@@ -41,6 +41,7 @@ just a folder that stays honest.
 - [Deploying it (AWS EC2 + cron + CloudWatch)](#deploying-it-aws-ec2--cron--cloudwatch)
 - [Runbook — when something breaks](#runbook--when-something-breaks)
 - [Out of scope](#out-of-scope-for-now)
+- [How this was built](#how-this-was-built)
 
 ## What it actually does
 
@@ -397,3 +398,44 @@ tail -f /var/log/reminder.log                                # watch it live
   with an arbitrary `name: hours` mapping. No architecture change needed —
   `resolve_threshold()` already takes a generic `tier_hours` dict, it's just
   wired to two fixed tiers right now.
+
+## How this was built
+
+Being upfront about this: I built it with **Claude Code** (AI-assisted /
+agentic development), not by hand-typing every line. But "used AI" undersells
+what that actually looked like, so worth being specific about what was mine
+vs. what the AI did.
+
+**What I did:**
+- Specified the exact behavior — the reaction-means-acknowledged rule, the
+  trivial-message (sticker/GIF/emoji-only) skip logic, the close/family tier
+  system and its threshold precedence, the group-size cutoff, the actual
+  hour values for each tier.
+- Drove the architecture calls — why the decision logic (`reminder/logic.py`)
+  has zero I/O so it's fully unit-testable on its own, why SQLite over
+  anything heavier, why cron fires hourly with a self-throttle instead of
+  fighting cron into doing "every 36h" natively.
+- Reviewed every piece before it shipped through a two-stage process (spec
+  compliance, then code quality) — that review is what actually caught real
+  bugs before any of this touched a live account:
+  - A `ChatFull.participants_count` field that doesn't exist on basic
+    Telegram groups — would've crashed on every small group chat.
+  - An off-by-one in message-batch fetching that silently skewed which
+    messages counted as "unanswered."
+  - A blanket exception handler that would've let one bad chat abort an
+    entire cron run instead of just skipping it.
+  - A CI config bug — `ModuleNotFoundError` on a clean checkout that
+    happened to work fine on my own machine.
+- Called every product/ops decision on top: what shipped vs. what's roadmap,
+  the runbook, the CI setup, the monitoring gaps I'm choosing to leave open
+  and why.
+
+**What the AI did:** wrote the actual Python, ran the tests, checked API
+details against the installed library, caught the bugs above on review
+passes when I asked it to.
+
+Not pretending I typed every character. But I designed this, drove every
+decision, and caught issues through review the same way I would on a human
+PR — that's the actual workflow, and it's more honest to say so than to
+either hide it or downplay what building with AI assistance well actually
+takes.
