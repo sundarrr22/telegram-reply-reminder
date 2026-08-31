@@ -235,6 +235,14 @@ exist yet, then scans your chats and files the unanswered ones in. Run it
 again whenever — it self-throttles so it only actually does the scan once
 every `RUN_INTERVAL_HOURS`.
 
+**On removal timing:** replying to someone doesn't pull them out of the
+folder instantly — it happens on the bot's *next actual scan*, not the
+moment you hit send. Since cron fires hourly but the script only actually
+scans once every `RUN_INTERVAL_HOURS` (36h by default), that could be up to
+36h later even though cron is technically running every hour the whole time.
+Lower `RUN_INTERVAL_HOURS` in `.env` if you want faster removal, or just run
+`python run.py` by hand right after replying.
+
 ### Managing close friends / family
 
 No CLI for this one — just text **yourself** in Telegram Saved Messages:
@@ -373,11 +381,19 @@ tail -f /var/log/reminder.log                                # watch it live
 
 ## Out of scope (for now)
 
+**Hard limits — not planned:**
 - Broadcast channels and groups with 10+ members — always skipped.
 - Multi-account support — one Telegram account per deployment.
-- Custom tier names beyond `close` / `family`.
+
+**Not built yet, but planned:**
 - **A heartbeat/dead-man's-switch alarm.** The current CloudWatch alarm only
   fires on `ERROR` log lines, so a dead cron job or a hung box produces no
   log output at all and triggers nothing. A second alarm — fire if "Run
-  complete" hasn't appeared in the logs for ~40h — would close that gap. Not
-  built yet, but it's the next thing I'd add.
+  complete" hasn't appeared in the logs for ~40h — would close that gap.
+- **Custom tier names beyond `close` / `family`.** Same pattern as the
+  existing tiers, just generalized: extend the Saved Messages commands to
+  something like `/tier <name> @user` instead of two hardcoded verbs, and
+  replace the `CLOSE_THRESHOLD_HOURS`/`FAMILY_THRESHOLD_HOURS` pair in `.env`
+  with an arbitrary `name: hours` mapping. No architecture change needed —
+  `resolve_threshold()` already takes a generic `tier_hours` dict, it's just
+  wired to two fixed tiers right now.
