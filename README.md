@@ -16,6 +16,13 @@ folder called **"To Reply Soon"**. Reply to someone and it auto-removes them
 from that folder next run. No app, no dashboard, no extra thing to check —
 just a folder that stays honest.
 
+Also, ngl, wasn't just about the reminders. I wanted a real reason to
+actually touch some stuff instead of just reading about it — Telethon
+(most tutorials are bot-token stuff, this needed a real MTProto login), and
+actually running something unattended on AWS with cron + CloudWatch instead
+of it being a toy exercise. Picked a problem I genuinely had, then used it
+as the excuse to learn the tech properly.
+
 **Quick highlights:**
 - Logs in as a real Telegram account via **Telethon (MTProto)** — not the Bot
   API, so it can read your existing DMs and manage native Telegram folders.
