@@ -401,41 +401,20 @@ tail -f /var/log/reminder.log                                # watch it live
 
 ## How this was built
 
-Being upfront about this: I built it with **Claude Code** (AI-assisted /
-agentic development), not by hand-typing every line. But "used AI" undersells
-what that actually looked like, so worth being specific about what was mine
-vs. what the AI did.
+Gonna be straight up — I built this with Claude Code, not by typing every
+line myself. Didn't just throw one prompt at it either though.
 
-**What I did:**
-- Specified the exact behavior — the reaction-means-acknowledged rule, the
-  trivial-message (sticker/GIF/emoji-only) skip logic, the close/family tier
-  system and its threshold precedence, the group-size cutoff, the actual
-  hour values for each tier.
-- Drove the architecture calls — why the decision logic (`reminder/logic.py`)
-  has zero I/O so it's fully unit-testable on its own, why SQLite over
-  anything heavier, why cron fires hourly with a self-throttle instead of
-  fighting cron into doing "every 36h" natively.
-- Reviewed every piece before it shipped through a two-stage process (spec
-  compliance, then code quality) — that review is what actually caught real
-  bugs before any of this touched a live account:
-  - A `ChatFull.participants_count` field that doesn't exist on basic
-    Telegram groups — would've crashed on every small group chat.
-  - An off-by-one in message-batch fetching that silently skewed which
-    messages counted as "unanswered."
-  - A blanket exception handler that would've let one bad chat abort an
-    entire cron run instead of just skipping it.
-  - A CI config bug — `ModuleNotFoundError` on a clean checkout that
-    happened to work fine on my own machine.
-- Called every product/ops decision on top: what shipped vs. what's roadmap,
-  the runbook, the CI setup, the monitoring gaps I'm choosing to leave open
-  and why.
+I decided how the bot should actually behave — when a reaction counts as
+answering someone, when a sticker doesn't need a reply, how close/family
+tiers should work, what the threshold hours should actually be. Claude
+wrote the code for that. I went through every piece before it shipped, and
+that's actually how we caught real bugs along the way — a Telegram field
+that doesn't even exist on basic group chats (would've crashed instantly),
+an off-by-one that was quietly messing up which messages counted as
+unanswered, and a CI bug that only showed up on a clean checkout, not on my
+own machine.
 
-**What the AI did:** wrote the actual Python, ran the tests, checked API
-details against the installed library, caught the bugs above on review
-passes when I asked it to.
-
-Not pretending I typed every character. But I designed this, drove every
-decision, and caught issues through review the same way I would on a human
-PR — that's the actual workflow, and it's more honest to say so than to
-either hide it or downplay what building with AI assistance well actually
-takes.
+So yeah, AI wrote most of the code. I'm the one who decided what it should
+do and caught it when it wasn't right. Wanted to say that straight instead
+of pretending I hand-wrote 600 lines of Telethon, or acting like this just
+appeared after one message.
