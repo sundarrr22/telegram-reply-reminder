@@ -2,6 +2,7 @@ import logging
 
 from telethon.tl import functions, types
 
+from reminder import db
 from reminder.commands import parse_command
 from reminder.logic import Message
 
@@ -66,6 +67,8 @@ async def remove_peer_from_folder(client, folder, entity) -> None:
 async def fetch_unreplied_batch(client, dialog, limit: int = 20) -> list:
     messages = []
     async for msg in client.iter_messages(dialog.entity, limit=limit):
+        if msg.out:
+            break
         messages.append(
             Message(
                 id=msg.id,
@@ -76,8 +79,6 @@ async def fetch_unreplied_batch(client, dialog, limit: int = 20) -> list:
                 is_gif=msg.gif is not None,
             )
         )
-        if msg.out:
-            break
     return messages
 
 
@@ -88,17 +89,14 @@ async def my_reaction_on_last(client, dialog, batch) -> bool:
     fetched = await client.get_messages(dialog.entity, ids=last.id)
     if not fetched or not fetched.reactions:
         return False
-    me = await client.get_me()
-    for reaction in fetched.reactions.recent_reactions or []:
-        if getattr(reaction.peer_id, "user_id", None) == me.id:
-            return True
-    return False
+    return any(r.my for r in fetched.reactions.recent_reactions or [])
 
 
 async def get_participant_count(client, entity) -> int:
+    if isinstance(entity, types.ChatForbidden):
+        return -1
     if isinstance(entity, types.Chat):
-        full = await client(functions.messages.GetFullChatRequest(entity.id))
-        return full.full_chat.participants_count
+        return entity.participants_count
     if isinstance(entity, types.Channel):
         full = await client(functions.channels.GetFullChannelRequest(entity))
         return full.full_chat.participants_count
@@ -110,7 +108,7 @@ async def is_eligible_dialog(client, dialog, max_group_size: int) -> bool:
         return True
     if dialog.is_group:
         count = await get_participant_count(client, dialog.entity)
-        return count < max_group_size
+        return 0 <= count < max_group_size
     return False
 
 
@@ -129,8 +127,6 @@ async def fetch_pending_commands(client) -> list:
 
 
 async def apply_command(client, conn, message_id: int, action: str, username: str) -> None:
-    from reminder import db
-
     try:
         entity = await client.get_entity(username)
     except (ValueError, TypeError):
