@@ -1,5 +1,10 @@
 # telegram-reply-reminder
 
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![Tests](https://img.shields.io/badge/tests-31%20passing-brightgreen)
+![Telethon](https://img.shields.io/badge/telethon-MTProto-2CA5E0)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
 I keep forgetting to reply people on Telegram. Chat goes quiet, few days pass,
 then I feel bad lol. So I built this — a bot that watches my own Telegram
 account and tells me exactly which chats I'm ghosting, right inside Telegram
@@ -10,6 +15,31 @@ out which ones actually need a reply from me, and moves them into a Telegram
 folder called **"To Reply Soon"**. Reply to someone and it auto-removes them
 from that folder next run. No app, no dashboard, no extra thing to check —
 just a folder that stays honest.
+
+**Quick highlights:**
+- Logs in as a real Telegram account via **Telethon (MTProto)** — not the Bot
+  API, so it can read your existing DMs and manage native Telegram folders.
+- Built **test-driven** — 31 unit tests on the core decision logic, zero live
+  Telegram connection needed to run them.
+- Manages Telegram's internal **dialog filter API** to move chats in/out of a
+  folder programmatically.
+- Runs unattended on **AWS EC2** via cron, with a self-throttle workaround
+  for cron's "every N hours" limitation, plus **CloudWatch** alarms so a
+  failed run doesn't go unnoticed.
+- Lets you manage priority tiers (close friends/family) by **texting
+  yourself commands** in Telegram — no separate admin UI needed.
+
+## Table of contents
+
+- [What it actually does](#what-it-actually-does)
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [How the "unanswered" check works](#how-the-unanswered-check-works)
+- [Project structure](#project-structure)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Deploying it (AWS EC2 + cron + CloudWatch)](#deploying-it-aws-ec2--cron--cloudwatch)
+- [Out of scope](#out-of-scope-for-now)
 
 ## What it actually does
 
@@ -34,6 +64,35 @@ just a folder that stays honest.
 - Runs unattended on a cron job, self-throttles to roughly every 36 hours
   (explained below cuz cron can't actually do "every 36h" natively).
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph EC2["AWS EC2 instance"]
+        CRON["cron (hourly)"] --> RUN["run.py"]
+        RUN <--> DB[("SQLite\nreminder.sqlite3")]
+        RUN --> LOG["/var/log/reminder.log"]
+    end
+
+    RUN <-->|"MTProto\n(Telethon)"| TG["Telegram servers"]
+    TG <-.->|"you"| PHONE["Your Telegram app"]
+
+    LOG --> AGENT["CloudWatch Agent"]
+    AGENT --> LOGGROUP["Log Group\nreminder-bot-logs"]
+    LOGGROUP --> FILTER["Metric Filter\n(matches ERROR)"]
+    FILTER --> ALARM["CloudWatch Alarm"]
+    ALARM -->|"SNS"| EMAIL["📧 You get notified"]
+
+    style EC2 fill:#1a1a2e,stroke:#4ecca3,color:#fff
+    style TG fill:#2CA5E0,stroke:#1b7ea8,color:#fff
+    style ALARM fill:#e94560,stroke:#c23150,color:#fff
+```
+
+`run.py` is the only thing that talks to Telegram. SQLite is local
+state (thresholds, tiers, what's flagged, last-run time) — no external
+database, no server to manage. If something breaks, it shows up in the log,
+which CloudWatch is watching, which pages you.
+
 ## Tech stack
 
 - **Python 3.11+**
@@ -49,18 +108,60 @@ just a folder that stays honest.
 
 ## How the "unanswered" check works
 
-For each eligible chat:
+For each eligible chat, take every message they sent since your last message
+(could be 1, could be a wall of 10 — this is the "unreplied batch"), then:
 
-1. Take every message they sent since your last message (could be 1, could
-   be a wall of 10 — this is the "unreplied batch").
-2. If you reacted to the last one → done, skip it.
-3. If the *whole batch* is just stickers/GIFs/emoji → skip it, nothing to
-   reply to.
-4. Otherwise, look at the oldest message in that batch. If it's older than
-   the threshold for that chat → flag it.
+```mermaid
+flowchart TD
+    A["Unreplied batch\n(messages since your last reply)"] --> B{"Batch empty?\n(you replied last)"}
+    B -->|yes| SKIP1["✅ Not flagged"]
+    B -->|no| C{"You reacted to\ntheir last message?"}
+    C -->|yes| SKIP2["✅ Not flagged\n(reaction = acknowledged)"]
+    C -->|no| D{"Whole batch is just\nstickers / GIFs / emoji-only?"}
+    D -->|yes| SKIP3["✅ Not flagged\n(nothing to reply to)"]
+    D -->|no| E["Find oldest message\nin the batch"]
+    E --> F{"Older than this chat's\nthreshold?"}
+    F -->|no| SKIP4["✅ Not flagged yet\n(still within threshold)"]
+    F -->|yes| FLAG["🚩 Flagged →\nmoved to 'To Reply Soon'"]
 
-Threshold precedence (first one that's set wins):
-**manual per-chat override → tier (close/family) → global default.**
+    style FLAG fill:#e94560,stroke:#c23150,color:#fff
+    style SKIP1 fill:#4ecca3,stroke:#2e8b6f,color:#111
+    style SKIP2 fill:#4ecca3,stroke:#2e8b6f,color:#111
+    style SKIP3 fill:#4ecca3,stroke:#2e8b6f,color:#111
+    style SKIP4 fill:#4ecca3,stroke:#2e8b6f,color:#111
+```
+
+The "threshold" itself is resolved with this precedence (first one that's
+set wins): **manual per-chat override → tier (close/family) → global
+default.**
+
+## Project structure
+
+```
+telegram-reply-reminder/
+├── run.py                      # cron entry point — the whole pipeline runs from here
+├── login.py                    # one-time interactive Telegram login
+├── set_threshold.py            # CLI: list chats, set/clear per-chat threshold
+├── reminder/
+│   ├── logic.py                # pure decision logic — zero I/O, fully unit tested
+│   ├── commands.py             # parses /close, /family, /remove commands
+│   ├── db.py                   # SQLite persistence (thresholds, tiers, flags, run state)
+│   └── telegram_client.py      # Telethon integration layer (folders, messages, reactions)
+├── tests/                      # 31 pytest tests, covers logic.py + commands.py + db.py
+├── .env.example                # config template
+└── README.md
+```
+
+`reminder/logic.py` has zero Telethon/database imports on purpose — it's the
+part that's fully unit tested. `reminder/telegram_client.py` is the only
+place that talks to the real Telegram API.
+
+**Running the tests** (no Telegram account needed for this part):
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
 
 ## Setup
 
