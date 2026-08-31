@@ -22,8 +22,8 @@ API_HASH = os.environ["TELEGRAM_API_HASH"]
 SESSION_NAME = os.environ.get("SESSION_NAME", "reminder")
 DEFAULT_THRESHOLD_HOURS = float(os.environ.get("DEFAULT_THRESHOLD_HOURS", 24))
 TIER_HOURS = {
-    "close": float(os.environ.get("CLOSE_THRESHOLD_HOURS", 6)),
-    "family": float(os.environ.get("FAMILY_THRESHOLD_HOURS", 12)),
+    "close": float(os.environ.get("CLOSE_THRESHOLD_HOURS", 10)),
+    "family": float(os.environ.get("FAMILY_THRESHOLD_HOURS", 2)),
 }
 MAX_GROUP_SIZE = int(os.environ.get("MAX_GROUP_SIZE", 10))
 FOLDER_NAME = os.environ.get("FOLDER_NAME", "To Reply Soon")
