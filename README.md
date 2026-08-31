@@ -39,6 +39,7 @@ just a folder that stays honest.
 - [Setup](#setup)
 - [Usage](#usage)
 - [Deploying it (AWS EC2 + cron + CloudWatch)](#deploying-it-aws-ec2--cron--cloudwatch)
+- [Runbook — when something breaks](#runbook--when-something-breaks)
 - [Out of scope](#out-of-scope-for-now)
 
 ## What it actually does
@@ -335,8 +336,48 @@ Then set up:
 This way if Telegram changes something or the session dies, you find out
 same day instead of realizing 2 weeks later your reminders silently stopped.
 
+## Runbook — when something breaks
+
+Quick reference for when the CloudWatch alarm fires, or reminders just quietly
+stop showing up. Start here before digging through code.
+
+### 1. Check the log first, always
+
+```bash
+# on the box
+tail -100 /var/log/reminder.log
+
+# or straight from CloudWatch, from anywhere
+aws logs tail reminder-bot-logs --follow
+```
+
+### 2. Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `ERROR` alarm fires, log shows `FloodWaitError` | Telegram is rate-limiting the account — too many API calls too fast | Usually self-heals; Telethon waits out short flood waits on its own. If it's a long wait, just let the next hourly cron tick retry. If this happens often, the account is being scanned too aggressively — consider raising `RUN_INTERVAL_HOURS`. |
+| `ERROR` alarm fires, log shows `AuthKeyUnregisteredError` or another session/auth error | The session got logged out — you revoked it from Telegram's "Active Sessions" list, or Telegram invalidated it after a security event | SSH in and re-run `python login.py` (interactive, needs your phone for the code). SQLite state — thresholds, tiers — is untouched, only the login itself needs redoing. |
+| No alarm at all, but reminders just stopped appearing | **Silent failure** — cron stopped firing, or the box is down. The current alarm only watches for `ERROR` log lines, so a dead cron job produces *no* log lines at all and triggers nothing (see "Out of scope" below — a heartbeat alarm would close this gap) | SSH in, check `crontab -l` is still there, check `systemctl status cron`, then check the bot's own idea of its last run: `sqlite3 reminder.sqlite3 "SELECT last_run_at FROM run_state;"` |
+| A chat won't leave "To Reply Soon" even after you replied | Either the reply hasn't been picked up yet (next run within `RUN_INTERVAL_HOURS` will catch it), or a manual threshold override on that chat keeps re-flagging it | `python set_threshold.py list` to find the `chat_id`, then `python set_threshold.py clear <chat_id>` to drop the override, and check that chat's log line on the next run. |
+| The "To Reply Soon" folder got deleted or renamed in Telegram directly | `get_or_create_folder` matches **by title**, so it silently recreates an empty folder next run — but SQLite's `flagged_chats` table still thinks chats are flagged, so the two go out of sync | `sqlite3 reminder.sqlite3 "DELETE FROM flagged_chats;"` after it recreates — forces every chat to be re-evaluated fresh instead of trusting stale state. |
+| `login.py` hangs waiting for a code that never arrives | Wrong phone number, or Telegram rate-limiting login attempts from a fresh EC2 IP (common right after spinning up a new instance) | Wait a few minutes and retry. Persistent issue on a brand-new box is usually just IP reputation cooling down. |
+
+### 3. Quick diagnostics
+
+```bash
+crontab -l                                                  # is the cron entry actually there?
+sqlite3 reminder.sqlite3 "SELECT * FROM run_state;"          # when did it last actually complete?
+sqlite3 reminder.sqlite3 "SELECT * FROM flagged_chats;"       # what does the bot think is flagged right now?
+tail -f /var/log/reminder.log                                # watch it live
+```
+
 ## Out of scope (for now)
 
 - Broadcast channels and groups with 10+ members — always skipped.
 - Multi-account support — one Telegram account per deployment.
 - Custom tier names beyond `close` / `family`.
+- **A heartbeat/dead-man's-switch alarm.** The current CloudWatch alarm only
+  fires on `ERROR` log lines, so a dead cron job or a hung box produces no
+  log output at all and triggers nothing. A second alarm — fire if "Run
+  complete" hasn't appeared in the logs for ~40h — would close that gap. Not
+  built yet, but it's the next thing I'd add.
