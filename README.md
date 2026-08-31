@@ -181,8 +181,33 @@ Add:
 
 ### 3. CloudWatch — catching failed runs
 
-Install the CloudWatch agent, point it at `/var/log/reminder.log`, so your
-run logs land in a log group (e.g. `reminder-bot-logs`).
+Install the CloudWatch agent on the box, then give it this config so it
+ships `/var/log/reminder.log` into a log group called `reminder-bot-logs`:
+
+```bash
+sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CFG'
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/reminder.log",
+            "log_group_name": "reminder-bot-logs",
+            "log_stream_name": "{instance_id}",
+            "timestamp_format": "%Y-%m-%d %H:%M:%S,%f"
+          }
+        ]
+      }
+    }
+  }
+}
+CFG
+
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+```
 
 Then set up:
 - A **metric filter** on that log group matching `ERROR` — turns log lines

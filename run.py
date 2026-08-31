@@ -57,10 +57,12 @@ async def main() -> None:
     last_run = db.get_last_run_at(conn)
     if not should_run(last_run, now, RUN_INTERVAL_HOURS):
         logger.info("Not due yet (last run %s), skipping", last_run)
+        conn.close()
         return
 
     if not os.path.exists(f"{SESSION_NAME}.session"):
         logger.error("No session file found at %s.session. Run login.py first.", SESSION_NAME)
+        conn.close()
         raise SystemExit(1)
 
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
@@ -68,13 +70,16 @@ async def main() -> None:
     try:
         commands = await tg.fetch_pending_commands(client)
         for message_id, action, username in commands:
-            await tg.apply_command(client, conn, message_id, action, username)
+            try:
+                await tg.apply_command(client, conn, message_id, action, username)
+            except Exception:
+                logger.exception("Skipping command /%s @%s after error", action, username)
 
         folder = await tg.get_or_create_folder(client, FOLDER_NAME)
         async for dialog in client.iter_dialogs():
-            if not await tg.is_eligible_dialog(client, dialog, MAX_GROUP_SIZE):
-                continue
             try:
+                if not await tg.is_eligible_dialog(client, dialog, MAX_GROUP_SIZE):
+                    continue
                 await process_dialog(client, conn, folder, dialog, now)
             except Exception:
                 logger.exception("Skipping dialog %s (%s) after error", dialog.id, dialog.name)
