@@ -74,7 +74,10 @@ async def main() -> None:
         async for dialog in client.iter_dialogs():
             if not await tg.is_eligible_dialog(client, dialog, MAX_GROUP_SIZE):
                 continue
-            await process_dialog(client, conn, folder, dialog, now)
+            try:
+                await process_dialog(client, conn, folder, dialog, now)
+            except Exception:
+                logger.exception("Skipping dialog %s (%s) after error", dialog.id, dialog.name)
     except Exception:
         logger.exception("Run failed")
         raise SystemExit(1)
@@ -82,6 +85,7 @@ async def main() -> None:
         await client.disconnect()
 
     db.set_last_run_at(conn, now)
+    conn.close()
     logger.info("Run complete")
 
 

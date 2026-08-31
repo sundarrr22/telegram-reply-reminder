@@ -112,11 +112,11 @@ async def is_eligible_dialog(client, dialog, max_group_size: int) -> bool:
     return False
 
 
-async def fetch_pending_commands(client) -> list:
+async def fetch_pending_commands(client, limit: int = 200) -> list:
     """Returns (message_id, action, username) for command-shaped text
-    messages in Saved Messages ("me")."""
+    messages in the most recent `limit` messages of Saved Messages ("me")."""
     commands = []
-    async for msg in client.iter_messages("me"):
+    async for msg in client.iter_messages("me", limit=limit):
         if not msg.message:
             continue
         parsed = parse_command(msg.message)
@@ -134,6 +134,13 @@ async def apply_command(client, conn, message_id: int, action: str, username: st
             "Could not resolve @%s for command %s, leaving message in place",
             username,
             action,
+        )
+        return
+
+    if not isinstance(entity, types.User):
+        logger.warning(
+            "@%s is not a user (tiers only apply to 1:1 chats), leaving message in place",
+            username,
         )
         return
 
